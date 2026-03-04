@@ -16,19 +16,25 @@ public class ResumeAnalyzerService {
     private final JobRepository jobRepository;
     private final Tika tika;
 
-    // Master skills list
-    private static final List<String> SKILLS_TAXONOMY = Arrays.asList(
+    private static final List<String> IT_SKILLS = Arrays.asList(
             "java", "python", "javascript", "typescript", "react", "angular", "vue",
             "spring", "spring boot", "hibernate", "node", "express", "django", "flask",
             "sql", "mysql", "postgresql", "mongodb", "redis", "elasticsearch",
             "aws", "azure", "gcp", "docker", "kubernetes", "jenkins", "git", "github",
             "html", "css", "bootstrap", "tailwind", "rest", "api", "microservices",
-            "linux", "bash", "maven", "gradle", "junit", "testing", "agile", "scrum",
+            "linux", "bash", "maven", "gradle", "junit", "agile", "scrum",
             "machine learning", "deep learning", "tensorflow", "pytorch", "data science",
-            "pandas", "numpy", "tableau", "power bi", "excel", "communication",
-            "leadership", "management", "marketing", "sales", "accounting", "finance",
-            "hr", "recruitment", "operations", "logistics", "supply chain", "seo",
-            "content writing", "graphic design", "figma", "photoshop", "project management"
+            "pandas", "numpy", "devops", "kafka", "graphql", "flutter", "kotlin"
+    );
+
+    private static final List<String> NON_IT_SKILLS = Arrays.asList(
+            "accounting", "finance", "excel", "tally", "gst", "tds", "payroll",
+            "marketing", "sales", "seo", "social media", "content writing",
+            "hr", "recruitment", "operations", "logistics", "supply chain",
+            "graphic design", "figma", "photoshop", "illustrator",
+            "project management", "leadership", "communication", "teamwork",
+            "customer service", "business development", "crm", "erp",
+            "banking", "insurance", "legal", "compliance", "audit"
     );
 
     public ResumeAnalyzerService(JobRepository jobRepository) {
@@ -36,60 +42,79 @@ public class ResumeAnalyzerService {
         this.tika = new Tika();
     }
 
-    public ResumeAnalysisResult analyzeResume(MultipartFile file) throws Exception {
-        // Step 1: Extract text from resume
+    // Step 1: Parse resume and detect category + return matched jobs
+    public Map<String, Object> parseResumeAndGetJobs(MultipartFile file) throws Exception {
         String resumeText = tika.parseToString(file.getInputStream()).toLowerCase();
 
-        // Step 2: Find skills in resume
-        List<String> resumeSkills = new ArrayList<>();
-        for (String skill : SKILLS_TAXONOMY) {
-            if (resumeText.contains(skill.toLowerCase())) {
-                resumeSkills.add(skill);
-            }
-        }
+        // Count IT vs Non-IT skill matches
+        long itCount = IT_SKILLS.stream()
+                .filter(s -> resumeText.contains(s.toLowerCase())).count();
+        long nonItCount = NON_IT_SKILLS.stream()
+                .filter(s -> resumeText.contains(s.toLowerCase())).count();
 
-        // Step 3: Get trending skills from job database
-        List<Job> allJobs = jobRepository.findAll();
-        Map<String, Integer> skillFrequency = new HashMap<>();
+        String detectedCategory = itCount >= nonItCount ? "IT" : "Non-IT";
 
-        for (Job job : allJobs) {
-            String jobText = "";
-            if (job.getDescription() != null) jobText += job.getDescription().toLowerCase();
-            if (job.getTitle() != null) jobText += job.getTitle().toLowerCase();
+        // Get skills found in resume
+        List<String> skillSet = detectedCategory.equals("IT") ? IT_SKILLS : NON_IT_SKILLS;
+        List<String> resumeSkills = skillSet.stream()
+                .filter(s -> resumeText.contains(s.toLowerCase()))
+                .collect(Collectors.toList());
 
-            for (String skill : SKILLS_TAXONOMY) {
-                if (jobText.contains(skill.toLowerCase())) {
-                    skillFrequency.put(skill, skillFrequency.getOrDefault(skill, 0) + 1);
-                }
-            }
-        }
-
-        // Step 4: Get top 20 trending skills
-        List<String> trendingSkills = skillFrequency.entrySet().stream()
-                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+        // Get matching jobs from DB
+        List<Job> matchingJobs = jobRepository.findByCategory(detectedCategory)
+                .stream()
                 .limit(20)
-                .map(Map.Entry::getKey)
                 .collect(Collectors.toList());
 
-        // Step 5: Find missing skills
-        List<String> missingSkills = trendingSkills.stream()
-                .filter(skill -> !resumeSkills.contains(skill))
-                .limit(10)
+        Map<String, Object> result = new HashMap<>();
+        result.put("detectedCategory", detectedCategory);
+        result.put("resumeSkills", resumeSkills);
+        result.put("matchingJobs", matchingJobs);
+        result.put("resumeText", resumeText);
+
+        return result;
+    }
+
+    // Step 2: Compare resume against selected job and suggest keywords
+    public ResumeAnalysisResult analyzeResumeVsJob(String resumeText, Long jobId) throws Exception {
+        Job selectedJob = jobRepository.findById(jobId)
+                .orElseThrow(() -> new Exception("Job not found"));
+
+        String jobText = "";
+        if (selectedJob.getDescription() != null)
+            jobText += selectedJob.getDescription().toLowerCase();
+        if (selectedJob.getTitle() != null)
+            jobText += selectedJob.getTitle().toLowerCase();
+
+        String category = selectedJob.getCategory();
+        List<String> skillSet = category.equals("IT") ? IT_SKILLS : NON_IT_SKILLS;
+
+        // Skills in resume
+        List<String> resumeSkills = skillSet.stream()
+                .filter(s -> resumeText.contains(s.toLowerCase()))
                 .collect(Collectors.toList());
 
-        // Step 6: Calculate match score
-        long matchCount = trendingSkills.stream()
-                .filter(resumeSkills::contains)
-                .count();
-        int matchScore = (int) ((matchCount * 100) / Math.max(trendingSkills.size(), 1));
+        // Skills required by the job
+        List<String> jobSkills = skillSet.stream()
+                .filter(s -> jobText.contains(s.toLowerCase()))
+                .collect(Collectors.toList());
 
-        // Build result
+        // Missing skills = job needs but resume doesn't have
+        List<String> missingSkills = jobSkills.stream()
+                .filter(s -> !resumeSkills.contains(s))
+                .collect(Collectors.toList());
+
+        // Match score
+        int matchScore = jobSkills.isEmpty() ? 0 :
+                (int) ((resumeSkills.stream().filter(jobSkills::contains).count() * 100)
+                        / jobSkills.size());
+
         ResumeAnalysisResult result = new ResumeAnalysisResult();
         result.setResumeSkills(resumeSkills);
         result.setMissingSkills(missingSkills);
-        result.setTrendingSkills(trendingSkills);
+        result.setTrendingSkills(jobSkills);
         result.setMatchScore(matchScore);
-        result.setTotalJobsAnalyzed(allJobs.size());
+        result.setTotalJobsAnalyzed(1);
 
         return result;
     }
