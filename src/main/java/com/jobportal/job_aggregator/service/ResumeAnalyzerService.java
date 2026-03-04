@@ -95,8 +95,9 @@ public class ResumeAnalyzerService {
                 .collect(Collectors.toList());
 
         // Skills required by the job
+        String finalJobText = jobText;
         List<String> jobSkills = skillSet.stream()
-                .filter(s -> jobText.contains(s.toLowerCase()))
+                .filter(s -> finalJobText.contains(s.toLowerCase()))
                 .collect(Collectors.toList());
 
         // Missing skills = job needs but resume doesn't have
